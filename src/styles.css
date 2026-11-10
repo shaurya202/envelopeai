@@ -69,3 +69,12 @@ nav button{border-color:transparent;background:transparent}nav button.on{backgro
 
 .receipt{display:inline-block;text-align:left;background:#f6f2e8;padding:1.5rem 1.5rem 2.2rem;margin:1rem 0;font:700 1rem/1.5 var(--mono);box-shadow:0 4px 0 #0003;
   mask:linear-gradient(#000 0 0) top/100% calc(100% - 10px) no-repeat,conic-gradient(from -45deg at bottom,#0000,#000 1deg 89deg,#0000 90deg) bottom/14px 10px repeat-x}
+
+/* publik card */
+.publik-card{background:var(--paper);border:2px dashed var(--blue);padding:.8rem 1rem;margin-bottom:1.2rem;border-radius:3px;display:flex;flex-direction:column;gap:.5rem;font-size:.9rem}
+.publik-card.notice-402{border-color:var(--red);background:#fff2f0}
+.publik-balance{font-family:var(--mono);font-weight:700;color:var(--blue)}
+.publik-cost{font-size:.82rem;opacity:.8}
+.publik-disclosure{font-size:.85rem;margin:0 0 .5rem}
+.publik-btn{align-self:flex-start;display:inline-block;padding:.35rem .75rem;background:var(--ink);color:var(--paper);text-decoration:none;font-weight:700;font-size:.85rem;border-radius:3px}
+.publik-btn:hover{background:var(--blue)}

@@ -6,6 +6,7 @@ import { Envelopes } from './Envelopes';
 import { Afford } from './Afford';
 import { Receipt } from './Receipt';
 import { Review } from './Review';
+import { PublikCard } from './PublikCard';
 
 const KEY = 'envelopeai:v1';
 const load = (): Budget | null => { try { return JSON.parse(localStorage.getItem(KEY) ?? 'null'); } catch { return null; } };
@@ -46,6 +47,7 @@ export default function App() {
         </div>
       </header>
       <main>
+        <PublikCard />
         {tab === 'env' && <Envelopes b={b} set={setB} />}
         {tab === 'afford' && <Afford b={b} set={setB} />}
         {tab === 'receipt' && <Receipt b={b} />}
@@ -69,6 +71,7 @@ function Home({ onDone }: { onDone: (p: Awaited<ReturnType<typeof readSource>>) 
 
   return (
     <div className="home">
+      <PublikCard />
       <p className="kicker">Stop paying YNAB $109/year to budget your own money.</p>
       <div className={'letter airmail' + (over ? ' over' : '')}
         onDragOver={(e) => { e.preventDefault(); setOver(true); }} onDragLeave={() => setOver(false)}
