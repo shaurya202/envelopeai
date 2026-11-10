@@ -63,8 +63,13 @@ export function assess(b: Budget, label: string, price: number) {
   const verdict = short > 0 || worst <= 2 ? 'NOPE' : worst <= 4 ? 'HMM' : 'FINE';
   const hit = [...pulls].sort((a, c) => c.take - a.take)[0];
   const days = Math.round(price / dailySpend(b.profile));
+  const topMerch = b.profile.topMerchants[0];
+  const avgTicket = topMerch ? Math.max(1, Math.round(topMerch.total / topMerch.count)) : 0;
+  const comp = topMerch && avgTicket > 0
+    ? `${Math.max(1, Math.round(price / avgTicket))} visits to ${topMerch.name}`
+    : `${Math.max(1, Math.round(price / dailySpend(b.profile)))} days of daily spend`;
   const lines = [
-    `${Math.max(1, Math.round(price / 12))} Chipotle runs`,
+    comp,
     hit ? `takes ${fmt(Math.round(hit.take))} out of ${hit.name}` : 'there is nothing to take it from',
     `pushes Age of Money back ${days} day${days === 1 ? '' : 's'}`,
   ];

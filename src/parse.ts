@@ -136,11 +136,16 @@ export function parseBrainDump(text: string): Profile {
     else {
       const name = clause.slice(0, m.index).replace(/\b(is|are|costs?|due|my|the|for|on|about|around)\b/gi, ' ').replace(/\s+/g, ' ').trim();
       const due = c.match(/on the (\d+\w*)|on (\w+day)/);
-      p.bills.push({ name: (name || 'Bill').replace(/^./, (x) => x.toUpperCase()), amount, due: due?.[1] ?? due?.[2] });
+      const billName = (name || 'Bill').replace(/^./, (x) => x.toUpperCase());
+      if (BILL_CATS.has(billName) || due) {
+        p.bills.push({ name: billName, amount, due: due?.[1] ?? due?.[2] });
+      } else {
+        p.categories.push({ name: billName, monthly: amount });
+      }
     }
   }
-  const base = (p.income?.amount ?? 0) * 2 || p.cash;
-  p.categories = [['Groceries', 0.12], ['Transport', 0.06], ['Eating out', 0.05], ['Fun', 0.05]].map(([name, s]) => ({ name: name as string, monthly: Math.round(base * (s as number)) }));
   p.monthlySpend = p.bills.reduce((s, b) => s + b.amount, 0) + p.categories.reduce((s, c) => s + c.monthly, 0);
+  if (p.monthlySpend === 0 && p.income) p.monthlySpend = p.income.amount;
+  else if (p.monthlySpend === 0 && p.cash) p.monthlySpend = p.cash;
   return p;
 }

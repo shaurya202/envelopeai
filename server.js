@@ -111,6 +111,11 @@ const server = createServer(async (req, res) => {
         { role: 'system', content: 'You are a direct, witty financial coach. Give a 2-3 sentence roast of this spending profile. Mention specific merchants, subscription totals, or eating out.' },
         { role: 'user', content: JSON.stringify(input) },
       ];
+    } else if (task === 'profile_from_text') {
+      messages = [
+        { role: 'system', content: 'You parse natural language statements into a financial profile. Return JSON ONLY: {"cash":number,"income":{"amount":number,"when":string}|null,"bills":[{"name":string,"amount":number,"due":string|null}],"categories":[{"name":string,"monthly":number}],"subs":[],"topMerchants":[],"monthlySpend":number}. Extract only what the user explicitly stated. Never invent or synthesize categories.' },
+        { role: 'user', content: input.text },
+      ];
     } else if (task === 'afford_line') {
       messages = [
         { role: 'system', content: 'You are an honest budget coach. In 1 concise punchy sentence, tell the user what buying this item really costs them in terms of their budget tradeoffs.' },
@@ -150,13 +155,13 @@ const server = createServer(async (req, res) => {
       }
 
       const text = chatBody.choices?.[0]?.message?.content?.trim() || '';
-      if (task === 'adjust') {
+      if (task === 'adjust' || task === 'profile_from_text') {
         try {
           const cleaned = text.replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
           const parsed = JSON.parse(cleaned);
           return sendJson(res, 200, parsed);
         } catch {
-          return sendJson(res, 200, { moves: [] });
+          if (task === 'adjust') return sendJson(res, 200, { moves: [] });
         }
       }
       return sendJson(res, 200, { text });
