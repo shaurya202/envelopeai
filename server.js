@@ -113,7 +113,7 @@ const server = createServer(async (req, res) => {
       ];
     } else if (task === 'profile_from_text') {
       messages = [
-        { role: 'system', content: 'You parse natural language statements into a financial profile. Return JSON ONLY: {"cash":number,"income":{"amount":number,"when":string}|null,"bills":[{"name":string,"amount":number,"due":string|null}],"categories":[{"name":string,"monthly":number}],"subs":[],"topMerchants":[],"monthlySpend":number}. Extract only what the user explicitly stated. Never invent or synthesize categories.' },
+        { role: 'system', content: 'You parse natural language statements into a financial profile. Return JSON ONLY: {"cash":number,"income":{"amount":number,"when":string}|null,"bills":[{"name":string,"amount":number,"due":string|null}],"categories":[{"name":string,"monthly":number}],"subs":[],"topMerchants":[],"monthlySpend":number}. If the user did not list everyday categories, include standard starter categories (Groceries, Transport, Eating out, Fun) scaled appropriately.' },
         { role: 'user', content: input.text },
       ];
     } else if (task === 'afford_line') {

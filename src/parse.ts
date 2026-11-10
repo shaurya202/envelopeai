@@ -144,8 +144,10 @@ export function parseBrainDump(text: string): Profile {
       }
     }
   }
+  if (p.categories.length === 0) {
+    const base = (p.income?.amount ?? 0) * 2 || p.cash;
+    p.categories = [['Groceries', 0.12], ['Transport', 0.06], ['Eating out', 0.05], ['Fun', 0.05]].map(([name, s]) => ({ name: name as string, monthly: Math.round(base * (s as number)) }));
+  }
   p.monthlySpend = p.bills.reduce((s, b) => s + b.amount, 0) + p.categories.reduce((s, c) => s + c.monthly, 0);
-  if (p.monthlySpend === 0 && p.income) p.monthlySpend = p.income.amount;
-  else if (p.monthlySpend === 0 && p.cash) p.monthlySpend = p.cash;
   return p;
 }
