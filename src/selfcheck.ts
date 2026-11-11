@@ -94,4 +94,28 @@ const { envs: fundedCustom } = autoAssignUnderfunded(customEnvs, 50);
 assert.equal(fundedCustom.find((e) => e.id === '2')?.assigned, 50);
 assert.equal(fundedCustom.find((e) => e.id === '1')?.assigned, 0);
 
+// Inline cell math: plain numbers set, + / - nudge
+import { applyAmountInput, moveMoney } from './money';
+assert.equal(applyAmountInput(100, '+50'), 150);
+assert.equal(applyAmountInput(100, '-25'), 75);
+assert.equal(applyAmountInput(100, '200'), 200);
+assert.equal(applyAmountInput(100, '$1,200'), 1200);
+assert.equal(applyAmountInput(100, ''), 0);
+assert.equal(applyAmountInput(100, 'nope'), 100);
+
+// Moving money caps at what the source actually has available
+const preMove = [
+  { id: 'a', name: 'Fun', target: 100, assigned: 100, spent: 40, amount: 60, priority: 4 },
+  { id: 'b', name: 'Groceries', target: 200, assigned: 100, spent: 0, amount: 100, priority: 2 },
+];
+const postMove = moveMoney(preMove, 'a', 'b', 50);
+assert.equal(postMove.find((e) => e.id === 'a')?.assigned, 50);
+assert.equal(postMove.find((e) => e.id === 'a')?.amount, 10);
+assert.equal(postMove.find((e) => e.id === 'b')?.assigned, 150);
+assert.equal(postMove.find((e) => e.id === 'b')?.amount, 150);
+const cappedMove = moveMoney(preMove, 'a', 'b', 500);
+assert.equal(cappedMove.find((e) => e.id === 'a')?.amount, 0);
+assert.equal(cappedMove.find((e) => e.id === 'b')?.assigned, 160);
+assert.deepEqual(moveMoney(preMove, 'a', 'a', 10), preMove);
+
 console.log('ok');

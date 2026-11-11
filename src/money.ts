@@ -122,6 +122,32 @@ export function applyMoves(envs: Env[], pulls: { id: string; take: number }[], i
   });
 }
 
+/** Cell edit: "50" sets, "+50"/"-25" nudge relative to the current value. */
+export function applyAmountInput(current: number, raw: string): number {
+  const t = raw.trim().replace(/[$,\s]/g, '');
+  if (!t) return 0;
+  const rel = t.match(/^([+-])(.*)$/);
+  if (rel) {
+    const d = parseFloat(rel[2]);
+    return Number.isNaN(d) ? current : rel[1] === '+' ? current + d : current - d;
+  }
+  const n = parseFloat(t);
+  return Number.isNaN(n) ? current : n;
+}
+
+/** Move available dollars between envelopes, never more than the source has. */
+export function moveMoney(envs: Env[], fromId: string, toId: string, amount: number): Env[] {
+  const from = envs.find((e) => e.id === fromId);
+  if (!from || fromId === toId) return envs;
+  const take = Math.min(Math.max(0, amount), Math.max(0, from.amount));
+  if (take <= 0) return envs;
+  return envs.map((e) => {
+    if (e.id !== fromId && e.id !== toId) return e;
+    const nextAssigned = e.assigned + (e.id === fromId ? -take : take);
+    return { ...e, assigned: nextAssigned, amount: nextAssigned - e.spent };
+  });
+}
+
 /** Cover an overspent envelope from a source envelope or from lowest-priority envelopes. */
 export function coverOverspent(envs: Env[], targetId: string, fromId?: string): Env[] {
   const target = envs.find((e) => e.id === targetId);
