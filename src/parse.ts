@@ -124,6 +124,30 @@ export function parseStatement(text: string): Profile {
   return profileFromTxns(txns);
 }
 
+/** Extract individual transaction rows from a CSV to import into a live budget */
+export function extractCsvTxns(text: string): { date: string; desc: string; amount: number }[] {
+  const rows = csvRows(text);
+  if (rows.length < 2) return [];
+  const head = rows[0].map((h) => h.trim().toLowerCase());
+  const col = (re: RegExp) => head.findIndex((h) => re.test(h));
+  const [d, desc, amtC, outC, inC] = [
+    col(/date/),
+    col(/payee/) >= 0 ? col(/payee/) : col(/description|merchant|name|memo/),
+    col(/^amount$/),
+    col(/outflow|debit/),
+    col(/inflow|credit/),
+  ];
+  if (d < 0 || desc < 0 || (amtC < 0 && outC < 0)) return [];
+  return rows.slice(1).map((r) => {
+    const rawAmt = amtC >= 0 ? num(r[amtC]) : (num(r[inC]) || 0) - (num(r[outC]) || 0);
+    return {
+      date: r[d]?.trim() || new Date().toISOString().slice(0, 10),
+      desc: r[desc]?.trim() || 'Transaction',
+      amount: isNaN(rawAmt) ? 0 : rawAmt,
+    };
+  }).filter((x) => x.desc && x.amount !== 0);
+}
+
 /** Offline fallback for the brain-dump box when no Publik API is configured. */
 export function parseBrainDump(text: string): Profile {
   const p: Profile = { cash: 0, bills: [], categories: [], subs: [], topMerchants: [], monthlySpend: 0 };

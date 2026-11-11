@@ -20,7 +20,13 @@ export function Review({ b, set, onReset }: P & { onReset: () => void }) {
         const [from, to] = [envs.find((e) => e.name === m.from), envs.find((e) => e.name === m.to)];
         if (!from || !to) throw new Error(`No envelope called "${!from ? m.from : m.to}".`);
         const amt = Math.min(m.amount, from.amount);
-        envs = envs.map((e) => (e === from ? { ...e, amount: e.amount - amt } : e === to ? { ...e, amount: e.amount + amt } : e));
+        envs = envs.map((e) =>
+          e === from
+            ? { ...e, assigned: e.assigned - amt, amount: e.amount - amt }
+            : e === to
+            ? { ...e, assigned: e.assigned + amt, amount: e.amount + amt }
+            : e
+        );
       }
       set({ ...b, envelopes: envs }); setAsk('');
     } catch (e) { setMsg((e as Error).message); }

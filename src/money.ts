@@ -1,4 +1,4 @@
-import type { Budget, Env, Profile } from './types';
+import type { Budget, Env, Profile, Txn } from './types';
 
 export const fmt = (n: number) =>
   (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: Number.isInteger(n) ? 0 : 2 });
@@ -12,6 +12,10 @@ export const priorityFor = (name: string) => PRIORITY_BY_NAME[name] ?? 4;
 let n = 0;
 export const uid = () => Date.now().toString(36) + (n++).toString(36);
 
+/** Ready to Assign = total cash in bank minus total currently available in envelopes. */
+export const readyToAssign = (b: Budget) =>
+  b.profile.cash - b.envelopes.reduce((s, e) => s + e.amount, 0);
+
 /** Fund bills in full, everyday categories for half a month (one pay period), then pour the rest into Savings. */
 export function assign(p: Profile): Env[] {
   const wants = [
@@ -24,12 +28,32 @@ export function assign(p: Profile): Env[] {
   const envs: Env[] = wants
     .sort((a, b) => a.priority - b.priority)
     .map((w) => {
-      const amount = Math.max(0, Math.min(Math.round(w.need), left));
-      left -= amount;
-      return { id: uid(), name: w.name, amount, priority: w.priority };
+      const target = Math.round(w.need);
+      const assigned = Math.max(0, Math.min(target, left));
+      left -= assigned;
+      return { id: uid(), name: w.name, target, assigned, spent: 0, amount: assigned, priority: w.priority };
     });
-  envs.push({ id: uid(), name: 'Savings', amount: Math.max(0, Math.round(left)), priority: 5 });
+  const savings = Math.max(0, Math.round(left));
+  envs.push({ id: uid(), name: 'Savings', target: 0, assigned: savings, spent: 0, amount: savings, priority: 5 });
   return envs;
+}
+
+/** Auto-assign available cash to underfunded envelopes (assigned < target) by priority. */
+export function autoAssignUnderfunded(envs: Env[], availableCash: number): { envs: Env[]; assignedTotal: number } {
+  let left = Math.max(0, availableCash);
+  let assignedTotal = 0;
+  const updated = envs.map((e) => {
+    const deficit = Math.max(0, e.target - e.assigned);
+    if (deficit > 0 && left > 0) {
+      const take = Math.min(deficit, left);
+      left -= take;
+      assignedTotal += take;
+      const nextAssigned = e.assigned + take;
+      return { ...e, assigned: nextAssigned, amount: nextAssigned - e.spent };
+    }
+    return e;
+  });
+  return { envs: updated, assignedTotal };
 }
 
 export const dailySpend = (p: Profile) => Math.max(1, p.monthlySpend / 30);
@@ -80,8 +104,107 @@ export function applyMoves(envs: Env[], pulls: { id: string; take: number }[], i
   const taken = pulls.reduce((s, p) => s + p.take, 0);
   return envs.map((e) => {
     const p = pulls.find((x) => x.id === e.id);
-    return { ...e, amount: e.amount - (p?.take ?? 0) + (e.name === into ? taken : 0) };
+    const delta = (e.name === into ? taken : 0) - (p?.take ?? 0);
+    const nextAssigned = e.assigned + delta;
+    return { ...e, assigned: nextAssigned, amount: nextAssigned - e.spent };
   });
+}
+
+/** Cover an overspent envelope from a source envelope or from lowest-priority envelopes. */
+export function coverOverspent(envs: Env[], targetId: string, fromId?: string): Env[] {
+  const target = envs.find((e) => e.id === targetId);
+  if (!target || target.amount >= 0) return envs;
+  const deficit = Math.abs(target.amount);
+
+  if (fromId) {
+    const source = envs.find((e) => e.id === fromId);
+    if (!source) return envs;
+    const take = Math.min(deficit, Math.max(0, source.amount));
+    return envs.map((e) => {
+      if (e.id === source.id) {
+        const nextAssigned = e.assigned - take;
+        return { ...e, assigned: nextAssigned, amount: nextAssigned - e.spent };
+      }
+      if (e.id === target.id) {
+        const nextAssigned = e.assigned + take;
+        return { ...e, assigned: nextAssigned, amount: nextAssigned - e.spent };
+      }
+      return e;
+    });
+  }
+
+  // Pull from lowest-priority envelopes
+  const { pulls } = pullPlan(envs, deficit, target.name);
+  return envs.map((e) => {
+    if (e.id === target.id) {
+      const covered = pulls.reduce((s, p) => s + p.take, 0);
+      const nextAssigned = e.assigned + covered;
+      return { ...e, assigned: nextAssigned, amount: nextAssigned - e.spent };
+    }
+    const p = pulls.find((x) => x.id === e.id);
+    if (p) {
+      const nextAssigned = e.assigned - p.take;
+      return { ...e, assigned: nextAssigned, amount: nextAssigned - e.spent };
+    }
+    return e;
+  });
+}
+
+/** Parse quick natural language transaction or paycheck: "spent $42 on groceries" / "got paid $2,200" */
+export function parseQuickTxn(text: string, envs: Env[]): { desc: string; amount: number; envelopeId?: string } | null {
+  const t = text.trim();
+  const amtMatch = t.match(/\$?\s*([\d,]+(?:\.\d+)?)/);
+  if (!amtMatch) return null;
+  const rawNum = parseFloat(amtMatch[1].replace(/,/g, ''));
+  if (isNaN(rawNum) || rawNum <= 0) return null;
+
+  const isInflow = /\b(got paid|paid|paycheck|payday|income|earned|salary|deposit|\+)\b/i.test(t);
+  if (isInflow) {
+    return { desc: 'Paycheck / Inflow', amount: rawNum };
+  }
+
+  // Outflow: find matching envelope
+  const clean = t.replace(amtMatch[0], '').replace(/\b(spent|bought|paid|at|on|for|-)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  const match = envs.find((e) =>
+    clean && (e.name.toLowerCase().includes(clean.toLowerCase()) || clean.toLowerCase().includes(e.name.toLowerCase()))
+  );
+  return {
+    desc: clean ? clean.charAt(0).toUpperCase() + clean.slice(1) : (match ? match.name : 'Expense'),
+    amount: -rawNum,
+    envelopeId: match?.id,
+  };
+}
+
+/** Record transaction: updates envelope spent, profile cash, and returns updated Budget. */
+export function recordTxn(b: Budget, txn: { desc: string; amount: number; envelopeId?: string; date?: string }): Budget {
+  const newTxn: Txn = {
+    id: uid(),
+    date: txn.date || new Date().toISOString().slice(0, 10),
+    desc: txn.desc,
+    amount: txn.amount,
+    envelopeId: txn.envelopeId,
+  };
+
+  let nextCash = b.profile.cash + txn.amount;
+  let nextEnvs = b.envelopes;
+
+  if (txn.amount < 0 && txn.envelopeId) {
+    const cost = Math.abs(txn.amount);
+    nextEnvs = nextEnvs.map((e) => {
+      if (e.id === txn.envelopeId) {
+        const nextSpent = e.spent + cost;
+        return { ...e, spent: nextSpent, amount: e.assigned - nextSpent };
+      }
+      return e;
+    });
+  }
+
+  return {
+    ...b,
+    profile: { ...b.profile, cash: Math.max(0, nextCash) },
+    envelopes: nextEnvs,
+    transactions: [newTxn, ...(b.transactions || [])],
+  };
 }
 
 export function archetype(p: Profile) {
