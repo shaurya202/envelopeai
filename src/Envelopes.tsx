@@ -6,6 +6,7 @@ import {
   autoAssignUnderfunded,
   coverOverspent,
   fmt,
+  matchEnvelope,
   parseQuickTxn,
   readyToAssign,
   recordTxn,
@@ -145,6 +146,66 @@ export function Envelopes({ b, set }: P) {
     setTxMsg(`Logged ${parsed.amount > 0 ? '+' : ''}${fmt(parsed.amount)}: ${parsed.desc}`);
   };
 
+  // Fund envelope deficit without driving RTA negative
+  const handleFundDeficit = (envId: string, deficit: number) => {
+    if (rta > 0) {
+      const take = Math.min(deficit, rta);
+      const targetEnv = b.envelopes.find((x) => x.id === envId);
+      if (targetEnv) updateEnv(envId, { assigned: targetEnv.assigned + take });
+      return;
+    }
+
+    // rta <= 0: pull from Savings or lowest-priority envelopes with available money
+    const pool = b.envelopes
+      .filter((x) => x.id !== envId && x.amount > 0)
+      .sort((a, b) => b.priority - a.priority || b.amount - a.amount);
+    const source = pool[0];
+    if (!source) {
+      setTxMsg('No unassigned cash or savings available to fund this envelope.');
+      return;
+    }
+
+    const take = Math.min(deficit, source.amount);
+    const targetEnv = b.envelopes.find((x) => x.id === envId);
+    set({
+      ...b,
+      envelopes: b.envelopes.map((x) => {
+        if (x.id === source.id) {
+          const nextAssigned = x.assigned - take;
+          return { ...x, assigned: nextAssigned, amount: nextAssigned - x.spent };
+        }
+        if (x.id === envId) {
+          const nextAssigned = x.assigned + take;
+          return { ...x, assigned: nextAssigned, amount: nextAssigned - x.spent };
+        }
+        return x;
+      }),
+    });
+    setTxMsg(`Moved ${fmt(take)} from ${source.name} to fund ${targetEnv?.name}.`);
+  };
+
+  // Reassign transaction category and re-sync spent/available
+  const handleReassignTxn = (txId: string, newEnvId: string) => {
+    const tx = b.transactions?.find((t) => t.id === txId);
+    if (!tx || tx.amount >= 0) return;
+    const cost = Math.abs(tx.amount);
+    const oldEnvId = tx.envelopeId;
+    if (oldEnvId === newEnvId) return;
+
+    const nextEnvs = b.envelopes.map((e) => {
+      let nextSpent = e.spent;
+      if (e.id === oldEnvId) nextSpent -= cost;
+      if (e.id === newEnvId) nextSpent += cost;
+      return { ...e, spent: nextSpent, amount: e.assigned - nextSpent };
+    });
+
+    set({
+      ...b,
+      envelopes: nextEnvs,
+      transactions: b.transactions?.map((t) => (t.id === txId ? { ...t, envelopeId: newEnvId || undefined } : t)),
+    });
+  };
+
   // CSV Import of fresh transactions
   const handleCsvImport = async (file?: File) => {
     if (!file) return;
@@ -154,10 +215,8 @@ export function Envelopes({ b, set }: P) {
       if (!txns.length) throw new Error('No transactions found in CSV.');
       let currentBudget = b;
       for (const t of txns) {
-        // match category by description
-        const matched = currentBudget.envelopes.find((e) =>
-          t.desc.toLowerCase().includes(e.name.toLowerCase()) || e.name.toLowerCase().includes(t.desc.toLowerCase())
-        );
+        // match category by description or merchant rules
+        const matched = matchEnvelope(t.desc, currentBudget.envelopes);
         currentBudget = recordTxn(currentBudget, {
           date: t.date,
           desc: t.desc,
@@ -392,10 +451,7 @@ export function Envelopes({ b, set }: P) {
                           <button
                             className="underfunded-tag"
                             title={`Click to fund remaining ${fmt(underfunded)}`}
-                            onClick={() => {
-                              const canFund = rta > 0 ? Math.min(underfunded, rta) : underfunded;
-                              updateEnv(e.id, { assigned: e.assigned + canFund });
-                            }}
+                            onClick={() => handleFundDeficit(e.id, underfunded)}
                           >
                             Needs {fmt(underfunded)}
                           </button>
@@ -524,7 +580,24 @@ export function Envelopes({ b, set }: P) {
                       <tr key={tx.id}>
                         <td>{tx.date}</td>
                         <td>{tx.desc}</td>
-                        <td>{matchedEnv ? matchedEnv.name : tx.amount > 0 ? 'Ready to Assign' : 'Uncategorized'}</td>
+                        <td>
+                          {tx.amount > 0 ? (
+                            <span style={{ fontFamily: 'var(--mono)', fontSize: '0.8rem', color: 'var(--blue)' }}>Ready to Assign</span>
+                          ) : (
+                            <select
+                              value={tx.envelopeId || ''}
+                              onChange={(ev) => handleReassignTxn(tx.id, ev.target.value)}
+                              style={{ fontSize: '0.82rem', padding: '0.2rem 0.4rem', border: '1px solid var(--line)', background: 'var(--paper)' }}
+                            >
+                              <option value="">(Select Category)</option>
+                              {b.envelopes.map((e) => (
+                                <option key={e.id} value={e.id}>
+                                  {e.name}
+                                </option>
+                              ))}
+                            </select>
+                          )}
+                        </td>
                         <td style={{ textAlign: 'right', fontWeight: 'bold', color: tx.amount > 0 ? 'var(--blue)' : 'var(--ink)' }}>
                           {tx.amount > 0 ? `+${fmt(tx.amount)}` : `-${fmt(Math.abs(tx.amount))}`}
                         </td>
@@ -559,6 +632,20 @@ export function Envelopes({ b, set }: P) {
                   })}
                 </tbody>
               </table>
+            )}
+
+            {b.log && b.log.length > 0 && (
+              <div style={{ marginTop: '1.2rem', paddingTop: '0.8rem', borderTop: '1px dashed var(--line)' }}>
+                <h4 style={{ margin: '0 0 0.5rem', fontFamily: 'var(--mono)', fontSize: '0.82rem', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                  Impulse / Reality Check History ({b.log.length})
+                </h4>
+                {b.log.slice().reverse().map((entry) => (
+                  <div key={entry.at} className="r">
+                    <span>{entry.kind === 'buy' ? '🛒 Bought anyway' : '🛡️ Saved instead'}: {entry.label}</span>
+                    <span>{fmt(entry.price)}</span>
+                  </div>
+                ))}
+              </div>
             )}
           </div>
         )}

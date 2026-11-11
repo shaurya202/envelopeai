@@ -43,7 +43,7 @@ const RULES: [RegExp, string][] = [
   [/cvs|walgreens|pharmacy|doctor|dental|clinic/i, 'Health'],
   [/steam|playstation|xbox|amc|cinema|ticketmaster|bar |brewery|concert/i, 'Fun'],
 ];
-const categorize = (d: string) => RULES.find(([r]) => r.test(d))?.[1] ?? 'Everything else';
+export const categorize = (d: string) => RULES.find(([r]) => r.test(d))?.[1] ?? 'Everything else';
 const BILL_CATS = new Set(['Rent', 'Utilities', 'Insurance']);
 const merchantKey = (d: string) => d.toLowerCase().replace(/[#*\d]+/g, '').replace(/\s+/g, ' ').trim().slice(0, 24);
 const median = (a: number[]) => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)] ?? 0;
@@ -138,7 +138,7 @@ export function extractCsvTxns(text: string): { date: string; desc: string; amou
     col(/inflow|credit/),
   ];
   if (d < 0 || desc < 0 || (amtC < 0 && outC < 0)) return [];
-  return rows.slice(1).map((r) => {
+  const rawTxns = rows.slice(1).map((r) => {
     const rawAmt = amtC >= 0 ? num(r[amtC]) : (num(r[inC]) || 0) - (num(r[outC]) || 0);
     return {
       date: r[d]?.trim() || new Date().toISOString().slice(0, 10),
@@ -146,6 +146,16 @@ export function extractCsvTxns(text: string): { date: string; desc: string; amou
       amount: isNaN(rawAmt) ? 0 : rawAmt,
     };
   }).filter((x) => x.desc && x.amount !== 0);
+
+  // Credit-card CSVs list charges as positive numbers. If positive transactions outnumber negative ones, flip signs.
+  const posCount = rawTxns.filter((t) => t.amount > 0).length;
+  const negCount = rawTxns.filter((t) => t.amount < 0).length;
+  const flip = posCount > negCount;
+
+  return rawTxns.map((t) => ({
+    ...t,
+    amount: flip ? -t.amount : t.amount,
+  }));
 }
 
 /** Offline fallback for the brain-dump box when no Publik API is configured. */

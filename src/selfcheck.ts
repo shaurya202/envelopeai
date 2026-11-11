@@ -60,4 +60,38 @@ assert.equal(parsedSpend?.amount, -42);
 const parsedPay = parseQuickTxn('got paid $2,200', envs);
 assert.equal(parsedPay?.amount, 2200);
 
+import { matchEnvelope } from './money';
+import { extractCsvTxns } from './parse';
+
+// Bug 1: "paid $1,400 rent" is an outflow (-1400) for Rent, NOT an inflow!
+const paidRent = parseQuickTxn('paid $1,400 rent', envs);
+assert.equal(paidRent?.amount, -1400);
+assert.equal(paidRent?.envelopeId, rentEnv.id);
+
+// Bug 2: Merchant names map to envelopes via matchEnvelope / categorize
+const chipotleTx = parseQuickTxn('spent $15 at Chipotle', envs);
+assert.equal(chipotleTx?.amount, -15);
+const eatingOutEnv = envs.find((e) => e.name === 'Eating out');
+assert.equal(chipotleTx?.envelopeId, eatingOutEnv?.id);
+
+// Outflow with no envelope match: auto-assigns to "Everything else" so RTA stays balanced
+const unknownOutflow = recordTxn(b, { desc: 'Unknown Store XYZ', amount: -50 });
+assert.equal(readyToAssign(unknownOutflow), 0);
+assert.ok(unknownOutflow.envelopes.some((e) => e.name === 'Everything else' && e.spent === 50));
+
+// Bug 3: Credit card CSV sign inversion
+const ccCsv = 'Date,Description,Amount\n2026-05-01,AMAZON,50.00\n2026-05-02,TARGET,30.00\n2026-05-03,PAYMENT,-80.00';
+const parsedCc = extractCsvTxns(ccCsv);
+assert.equal(parsedCc.find((t) => t.desc === 'AMAZON')?.amount, -50);
+assert.equal(parsedCc.find((t) => t.desc === 'PAYMENT')?.amount, 80);
+
+// Bug 5: autoAssignUnderfunded priority order with newly appended envelopes
+const customEnvs = [
+  { id: '1', name: 'Fun', target: 100, assigned: 0, spent: 0, amount: 0, priority: 4 },
+  { id: '2', name: 'New Must Pay', target: 50, assigned: 0, spent: 0, amount: 0, priority: 1 },
+];
+const { envs: fundedCustom } = autoAssignUnderfunded(customEnvs, 50);
+assert.equal(fundedCustom.find((e) => e.id === '2')?.assigned, 50);
+assert.equal(fundedCustom.find((e) => e.id === '1')?.assigned, 0);
+
 console.log('ok');

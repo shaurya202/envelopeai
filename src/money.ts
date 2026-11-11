@@ -1,4 +1,5 @@
 import type { Budget, Env, Profile, Txn } from './types';
+import { categorize } from './parse';
 
 export const fmt = (n: number) =>
   (n < 0 ? '-' : '') + '$' + Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: Number.isInteger(n) ? 0 : 2 });
@@ -42,12 +43,23 @@ export function assign(p: Profile): Env[] {
 export function autoAssignUnderfunded(envs: Env[], availableCash: number): { envs: Env[]; assignedTotal: number } {
   let left = Math.max(0, availableCash);
   let assignedTotal = 0;
-  const updated = envs.map((e) => {
+
+  // Plan allocations sorted by priority (1 = MUST PAY first)
+  const allocs = new Map<string, number>();
+  const sorted = [...envs].sort((a, b) => a.priority - b.priority);
+  for (const e of sorted) {
     const deficit = Math.max(0, e.target - e.assigned);
     if (deficit > 0 && left > 0) {
       const take = Math.min(deficit, left);
       left -= take;
       assignedTotal += take;
+      allocs.set(e.id, take);
+    }
+  }
+
+  const updated = envs.map((e) => {
+    const take = allocs.get(e.id) ?? 0;
+    if (take > 0) {
       const nextAssigned = e.assigned + take;
       return { ...e, assigned: nextAssigned, amount: nextAssigned - e.spent };
     }
@@ -150,6 +162,27 @@ export function coverOverspent(envs: Env[], targetId: string, fromId?: string): 
   });
 }
 
+/** Match payee or text to an envelope by name or merchant category rules */
+export function matchEnvelope(text: string, envs: Env[]): Env | undefined {
+  if (!text) return undefined;
+  const clean = text.trim().toLowerCase();
+
+  // 1. Direct name match or substring match
+  const direct = envs.find((e) => {
+    const en = e.name.toLowerCase();
+    return en === clean || clean.includes(en) || en.includes(clean);
+  });
+  if (direct) return direct;
+
+  // 2. Merchant rules via categorize()
+  const cat = categorize(text);
+  if (cat && cat !== 'Everything else') {
+    const fromCat = envs.find((e) => e.name.toLowerCase() === cat.toLowerCase());
+    if (fromCat) return fromCat;
+  }
+  return undefined;
+}
+
 /** Parse quick natural language transaction or paycheck: "spent $42 on groceries" / "got paid $2,200" */
 export function parseQuickTxn(text: string, envs: Env[]): { desc: string; amount: number; envelopeId?: string } | null {
   const t = text.trim();
@@ -158,16 +191,17 @@ export function parseQuickTxn(text: string, envs: Env[]): { desc: string; amount
   const rawNum = parseFloat(amtMatch[1].replace(/,/g, ''));
   if (isNaN(rawNum) || rawNum <= 0) return null;
 
-  const isInflow = /\b(got paid|paid|paycheck|payday|income|earned|salary|deposit|\+)\b/i.test(t);
+  // Inflow: explicit deposit/paycheck/income/got paid keywords or leading "+"
+  // Note: "paid $1400 rent" is an outflow, NOT an inflow!
+  const isInflow = /\b(got paid|paycheck|payday|income|earned|salary|deposit)\b/i.test(t) || /^\s*\+/.test(t);
   if (isInflow) {
     return { desc: 'Paycheck / Inflow', amount: rawNum };
   }
 
-  // Outflow: find matching envelope
-  const clean = t.replace(amtMatch[0], '').replace(/\b(spent|bought|paid|at|on|for|-)\b/gi, ' ').replace(/\s+/g, ' ').trim();
-  const match = envs.find((e) =>
-    clean && (e.name.toLowerCase().includes(clean.toLowerCase()) || clean.toLowerCase().includes(e.name.toLowerCase()))
-  );
+  // Outflow: strip amount and common spending words ("spent $15 at Chipotle", "paid $1400 for rent")
+  const clean = t.replace(amtMatch[0], '').replace(/\b(spent|bought|paid|at|on|for|to|-)\b/gi, ' ').replace(/\s+/g, ' ').trim();
+  const match = matchEnvelope(clean || t, envs);
+
   return {
     desc: clean ? clean.charAt(0).toUpperCase() + clean.slice(1) : (match ? match.name : 'Expense'),
     amount: -rawNum,
@@ -177,27 +211,42 @@ export function parseQuickTxn(text: string, envs: Env[]): { desc: string; amount
 
 /** Record transaction: updates envelope spent, profile cash, and returns updated Budget. */
 export function recordTxn(b: Budget, txn: { desc: string; amount: number; envelopeId?: string; date?: string }): Budget {
-  const newTxn: Txn = {
-    id: uid(),
-    date: txn.date || new Date().toISOString().slice(0, 10),
-    desc: txn.desc,
-    amount: txn.amount,
-    envelopeId: txn.envelopeId,
-  };
-
-  let nextCash = b.profile.cash + txn.amount;
   let nextEnvs = b.envelopes;
+  let envId = txn.envelopeId;
 
-  if (txn.amount < 0 && txn.envelopeId) {
+  if (txn.amount < 0) {
+    if (!envId) {
+      const m = matchEnvelope(txn.desc, nextEnvs);
+      if (m) envId = m.id;
+    }
+    if (!envId) {
+      let fallback = nextEnvs.find((e) => e.name.toLowerCase() === 'everything else');
+      if (!fallback) {
+        fallback = { id: uid(), name: 'Everything else', target: 0, assigned: 0, spent: 0, amount: 0, priority: 4 };
+        nextEnvs = [...nextEnvs, fallback];
+      }
+      envId = fallback.id;
+    }
+
     const cost = Math.abs(txn.amount);
     nextEnvs = nextEnvs.map((e) => {
-      if (e.id === txn.envelopeId) {
+      if (e.id === envId) {
         const nextSpent = e.spent + cost;
         return { ...e, spent: nextSpent, amount: e.assigned - nextSpent };
       }
       return e;
     });
   }
+
+  const newTxn: Txn = {
+    id: uid(),
+    date: txn.date || new Date().toISOString().slice(0, 10),
+    desc: txn.desc,
+    amount: txn.amount,
+    envelopeId: envId,
+  };
+
+  const nextCash = b.profile.cash + txn.amount;
 
   return {
     ...b,

@@ -1,7 +1,7 @@
 import { useState } from 'react';
-import type { Budget } from './types';
+import type { Budget, Txn } from './types';
 import { verdictLine } from './ai';
-import { ageOfMoney, applyMoves, assess, fmt, parseAsk, pullPlan } from './money';
+import { ageOfMoney, applyMoves, assess, fmt, parseAsk, pullPlan, uid } from './money';
 
 type P = { b: Budget; set: (b: Budget) => void };
 type Result = ReturnType<typeof assess> & { quip: string };
@@ -24,15 +24,48 @@ export function Afford({ b, set }: P) {
   const finish = (kind: 'buy' | 'save') => {
     if (!r) return;
     const lines = [...r.lines];
-    let envelopes, cash = b.profile.cash;
-    if (kind === 'buy') { envelopes = applyMoves(b.envelopes, r.pulls); cash -= r.price; }
-    else {
-      const p = pullPlan(b.envelopes.filter((e) => e.priority >= 3), r.price, 'Savings') // never raid bills or essentials;
+    const today = new Date().toISOString().slice(0, 10);
+    let envelopes = b.envelopes;
+    let cash = b.profile.cash;
+    let nextTxns = b.transactions || [];
+
+    if (kind === 'buy') {
+      cash -= r.price;
+      const pullsMap = new Map(r.pulls.map((p) => [p.id, p.take]));
+      envelopes = envelopes.map((e) => {
+        const take = pullsMap.get(e.id) || 0;
+        if (take > 0) {
+          const nextSpent = e.spent + take;
+          return { ...e, spent: nextSpent, amount: e.assigned - nextSpent };
+        }
+        return e;
+      });
+
+      const newTxns: Txn[] = r.pulls
+        .filter((p) => p.take > 0)
+        .map((p) => ({
+          id: uid(),
+          date: today,
+          desc: r.pulls.length > 1 ? `${r.label} (${p.name})` : r.label,
+          amount: -p.take,
+          envelopeId: p.id,
+        }));
+      nextTxns = [...newTxns, ...nextTxns];
+    } else {
+      const p = pullPlan(b.envelopes.filter((e) => e.priority >= 3), r.price, 'Savings');
       envelopes = applyMoves(b.envelopes, p.pulls, 'Savings');
       lines.splice(0, lines.length, `moved ${fmt(Math.round(r.price - p.short))} into Savings`, 'Age of Money intact');
     }
-    set({ ...b, envelopes, profile: { ...b.profile, cash }, log: [...b.log, { at: Date.now(), kind, label: `${r.label} ${fmt(r.price)}`, price: r.price, lines }] });
-    setR(null); setQ('');
+
+    set({
+      ...b,
+      envelopes,
+      profile: { ...b.profile, cash },
+      transactions: nextTxns,
+      log: [...b.log, { at: Date.now(), kind, label: `${r.label} ${fmt(r.price)}`, price: r.price, lines }],
+    });
+    setR(null);
+    setQ('');
   };
 
   const stamp = r && { NOPE: 'stamp-no', HMM: 'stamp-hmm', FINE: 'stamp-ok' }[r.verdict];
