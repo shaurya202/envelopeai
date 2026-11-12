@@ -11,6 +11,7 @@ import {
   resolveProvider,
   provision,
   selfTest,
+  startTelemetry,
   balanceLine,
   topUpUrlFrom402,
   readCredential,
@@ -187,6 +188,7 @@ const server = createServer(async (req, res) => {
 });
 
 function startServer() {
+  startTelemetry();
   server.listen(PORT, () => {
     console.log(`EnvelopeAI running on http://localhost:${PORT}`);
   });

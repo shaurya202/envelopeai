@@ -10,7 +10,8 @@ import { fileURLToPath } from "node:url";
 
 export const APP_SLUG = "envelopeai";
 export const APP_VERSION = "1.0.0";
-export const DEFAULT_BASE_URL = "https://publikhq.com/api/v1";
+const ORIGIN = process.env.PUBLIK_ORIGIN || "https://publikhq.com";
+export const DEFAULT_BASE_URL = `${ORIGIN}/api/v1`;
 /** Ask for a tier, never a vendor model name. */
 export const MODELS = { fast: "publik-fast", balanced: "publik-balanced", smart: "publik-smart" };
 /** Show this and get a yes BEFORE provision(). */
@@ -28,14 +29,18 @@ export function appToken() {
   }
 }
 
-/** ~/Library/Application Support/publik/apps/<slug>.json, %LOCALAPPDATA%\publik\apps\<slug>.json, ~/.config/publik/apps/<slug>.json */
-export function credentialPath() {
+function publikDir() {
   const os = platform();
   const base =
     os === "darwin" ? join(homedir(), "Library", "Application Support")
     : os === "win32" ? (process.env.LOCALAPPDATA ?? join(homedir(), "AppData", "Local"))
     : (process.env.XDG_CONFIG_HOME ?? join(homedir(), ".config"));
-  return join(base, "publik", "apps", `${APP_SLUG}.json`);
+  return join(base, "publik");
+}
+
+/** ~/Library/Application Support/publik/apps/<slug>.json, %LOCALAPPDATA%\publik\apps\<slug>.json, ~/.config/publik/apps/<slug>.json */
+export function credentialPath() {
+  return join(publikDir(), "apps", `${APP_SLUG}.json`);
 }
 
 export function readCredential() {
@@ -71,7 +76,7 @@ export async function provision() {
   const prior = readCredential();
   let installId = prior?.install_id ?? randomUUID();
   for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await fetch(`${DEFAULT_BASE_URL}/installs`, {
+    const res = await fetch(`${ORIGIN}/api/v1/installs`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -99,15 +104,129 @@ export async function provision() {
   throw new Error("publik API could not set up this computer. Use your own key for now.");
 }
 
+export async function readWallet(key = null) {
+  const k = key || readCredential()?.key;
+  if (!k) return { status: 401, wallet: null, message: "No key" };
+  const res = await fetch(`${DEFAULT_BASE_URL}/wallet`, {
+    headers: { authorization: `Bearer ${k}` },
+    signal: AbortSignal.timeout(15000),
+  });
+  const b = await res.json().catch(() => ({}));
+  if (!res.ok || typeof b.claim_state !== "string") return { status: res.status, wallet: null, message: b.error?.message ?? null };
+  return {
+    status: res.status,
+    message: null,
+    wallet: { ...b, account: b.account ?? null, plan: b.plan ?? { kind: "none", label: null }, balance_micros: b.balance_micros ?? 0 },
+  };
+}
+
 /** Builder check, run by the BUILT app: start it with PUBLIK_SELF_TEST=1, print this line, exit.
  *  It provisions for real; the builder who runs it is the consent. */
 export async function selfTest() {
   try {
     const inst = await provision();
+    const r = await readWallet(inst.key);
+    if (!r.wallet) throw new Error(r.message ?? `GET /wallet answered ${r.status}`);
     return `publik self-test: ok ${APP_SLUG} ${APP_VERSION} (install ${inst.install_id.slice(0, 8)})`;
   } catch (e) {
-    return `publik self-test: failed: ${e instanceof Error ? e.message : String(e)}`;
+    const offline = e instanceof TypeError || (e instanceof Error && /abort|timeout/i.test(e.name));
+    return `publik self-test: failed: ${offline ? "publik is not reachable. Check your connection." : e instanceof Error ? e.message : String(e)}`;
   }
+}
+
+// ---------- usage counting: /skills/telemetry.md sections 3-5 ----------
+let timer = null;
+let installIdOnce = null;
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function usageOff() {
+  const dnt = (process.env.DO_NOT_TRACK ?? "").trim().toLowerCase();
+  if (dnt !== "" && dnt !== "0" && dnt !== "false") return true;
+  if (["0", "false", "off"].includes((process.env.PUBLIK_TELEMETRY ?? "").trim().toLowerCase())) return true;
+  try {
+    return JSON.parse(readFileSync(join(publikDir(), "consent.json"), "utf8")).usage === false;
+  } catch {
+    return false;
+  }
+}
+
+/** One random UUID per computer account, shared by every publik app, in <publik dir>/telemetry.json (mode 0600). */
+function telemetryInstallId() {
+  const file = join(publikDir(), "telemetry.json");
+  const saved = () => {
+    try {
+      const id = String(JSON.parse(readFileSync(file, "utf8")).install_id).toLowerCase();
+      return UUID_REGEX.test(id) ? id : null;
+    } catch {
+      return null;
+    }
+  };
+  if ((installIdOnce ??= saved())) return installIdOnce;
+  const fresh = randomUUID();
+  try {
+    mkdirSync(publikDir(), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      file,
+      JSON.stringify({ install_id: fresh, created_at: new Date().toISOString().replace(/\.\d+Z$/, "Z") }) + "\n",
+      { flag: "wx", mode: 0o600 }
+    );
+    return (installIdOnce = fresh);
+  } catch {
+    return (installIdOnce = saved() ?? fresh);
+  }
+}
+
+async function sendEvent(event) {
+  const say = (result) => {
+    if (process.env.PUBLIK_TELEMETRY_DEBUG === "1") {
+      process.stderr.write(`publik-telemetry: ${event} -> ${result}\n`);
+    }
+  };
+  try {
+    const osMap = { darwin: "macos", win32: "windows", linux: "linux" };
+    const currentOS = osMap[platform()];
+    if (!currentOS) return;
+    if (usageOff()) return say("off (opt-out)");
+    const cred = readCredential();
+    const key = process.env.PUBLIK_API_KEY || cred?.key;
+    const body = {
+      v: 1,
+      app: APP_SLUG,
+      install_id: telemetryInstallId(),
+      event,
+      app_version: APP_VERSION.replace(/^v/i, ""),
+      os: currentOS,
+      ...(arch() === "arm64" || arch() === "x64" ? { arch: arch() } : {}),
+    };
+    const endpoint = process.env.PUBLIK_TELEMETRY_URL || `${ORIGIN}/api/v1/telemetry`;
+    const headers = {
+      "content-type": "application/json",
+      ...(key?.startsWith("pk_") ? { authorization: `Bearer ${key}` } : {}),
+    };
+    const res = await fetch(endpoint, {
+      method: "POST",
+      signal: AbortSignal.timeout(5000),
+      headers,
+      body: JSON.stringify(body),
+    });
+    say(res.status);
+  } catch (e) {
+    say(e instanceof Error ? e.name : "error");
+  }
+}
+
+/** Called at startup: app_opened now, active_session every 30 minutes; never fails the app, never blocks. */
+export function startTelemetry() {
+  if (timer) return;
+  const s = Number(process.env.PUBLIK_TELEMETRY_INTERVAL_SECONDS);
+  timer = setInterval(() => void sendEvent("active_session"), (s >= 1 && s <= 86400 ? s : 1800) * 1000);
+  timer.unref?.();
+  void sendEvent("app_opened");
+}
+
+export function stopTelemetry() {
+  if (timer) clearInterval(timer);
+  timer = null;
 }
 
 export function balanceLine(micros, claimState = "anonymous") {
